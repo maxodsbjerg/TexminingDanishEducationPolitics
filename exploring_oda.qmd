@@ -1,0 +1,52 @@
+---
+title: "Text Mining Danish Educational Politics"
+author: "Max Odsbjerg Pedersen"
+format: html
+---
+```{r}
+library(tidyverse)
+library(tidytext)
+```
+
+```{r}
+str_count("cDticicccccccccDic")
+```
+
+```{r}
+data <- read_tsv("data/The_Danish_Parliament_Corpus_2009-2017_v2_w_subject_annotation/20091/20091_M1_helemoedet-memberinfo-subjects.txt", col_types = "cDtticicccccccccDic")
+```
+
+
+```{r}
+tibble(file = list.files("data/The_Danish_Parliament_Corpus_2009-2017_v2_w_subject_annotation/", recursive = TRUE, full.names = TRUE)) -> clarin
+```
+
+
+```{r}
+list.files("data/The_Danish_Parliament_Corpus_2009-2017_v2_w_subject_annotation", recursive = TRUE, full.names = TRUE, pattern = "^\\d{5}")
+```
+
+
+
+
+```{r}
+clarin <- list.files("data/The_Danish_Parliament_Corpus_2009-2017_v2_w_subject_annotation", recursive = TRUE, full.names = TRUE, pattern = "^\\d{5}") %>% 
+    map_df(~read_tsv(., , col_types = "cDtticicccccccccDic"))
+```
+
+```{r}
+clarin %>% 
+  count(Date) %>% 
+  ggplot(aes(x=Date, y=n)) +
+  geom_line() + 
+  xlab("")
+```
+```{r}
+clarin %>% 
+  filter(`Subject 1` == "Education") -> clarin_eudcation
+```
+
+```{r}
+
+```
+

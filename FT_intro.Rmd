@@ -1,0 +1,335 @@
+---
+title: "Hent Folketingsdata med R"
+author: "Martin Hauge Zeuner"
+date: "2/3/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Dette dokument demonstrerer, hvordan du relativt nemt kan komme i gang med at hente data fra Folketingets forhandlinger og forberede dem til videre analyse i R eller andre programmer.
+
+## Indlæsning af pakker
+
+For at indlæse og bearbejde vores data, bruger vi pakkerne `tidyverse` og `xml2`. Hvis de ikke allerede er installeret, kan de installeres fra *Packages*-fanen eller med `install.packages()`.
+```{r Load libraries, message=FALSE}
+library(tidyverse)
+library(xml2)
+```
+
+## Indhentning af data
+
+Referater fra Folketingets forhandlinger ligger tilgængelige på en FTP-server som XML-filer. Filerne afspejler de dokumenter, der findes på [Folketingets hjemmeside](https://www.ft.dk/da/dokumenter/dokumentlister/referater) under referater. Serveren kan tilgås med følgende URL:
+```{r Connect to FTP-server}
+url.show("ftp://oda.ft.dk/ODAXML/Referat/samling/")
+```
+
+Herfra kan vi browse videre gennem de forskellige samlinger ved at ændre URL'en:
+```{r Browse FTP-server}
+url.show("ftp://oda.ft.dk/ODAXML/Referat/samling/20201/")
+```
+
+Når vi har fundet frem til det møde, vi vil bruge, indlæser vi URL'en med `read_xml`-funktionen, der hjælper med at navigere dokumentets struktur.
+```{r Load XML-file, echo=TRUE}
+url <- "ftp://oda.ft.dk/ODAXML/Referat/samling/20201/20201_M8_helemoedet.xml"
+ft_xml <- read_xml(url)
+```
+
+
+## Opbygning og udtræk af data
+
+### Mødets dagsordenspunkter
+Nu har vi en struktur, vi kan søge og navigere i ved hjælp af dokumentets *tags*. Ønsker vi fx at finde mødets dagsordenspunkter, skal vi lede efter tagget `<ShortTitle>`. Det kan vi gøre med følgende kommando:
+```{r}
+ft_xml %>% 
+  xml_find_all("//ShortTitle") %>% 
+  xml_text()
+```
+
+### Dagsorden som DataFrame
+For at få bedre overblik, kan vi udtrække alle informationer, der har med dagsordenen at gøre og organisere dem i en *DataFrame*. Vi kan lave en DataFrame med `tibble`-funktionen. For hver type information, laver vi en kolonne og udtrækker informationen ved hjælp af XML-tags som før.
+```{r Agenda DataFrame}
+agenda_df <- tibble(
+  itemNum = ft_xml %>% 
+    xml_find_all("//ItemNo") %>% 
+    xml_text(),
+  title = ft_xml %>% 
+    xml_find_all("//ShortTitle") %>% 
+    xml_text(),
+  caseNumber = ft_xml %>% 
+    xml_find_all("//FTCaseNumber") %>% 
+    xml_text(),
+  caseType = ft_xml %>% 
+    xml_find_all("//FTCaseType") %>% 
+    xml_text(),
+  caseStage = ft_xml %>% 
+    xml_find_all("//FTCaseStage") %>% 
+    xml_text(),
+  start = ft_xml %>% 
+    xml_find_all("//DagsordenPunkt") %>% 
+    xml_find_first(".//StartDateTime") %>% 
+    xml_text()
+)
+```
+*Hvis ovenstående kode giver fejl, kan man istedet forsøge med en [alternativ metode](#alt_agenda) beskrevet nederst i dokumentet.*
+
+Nu har vi en tabellignende datastruktur med oplysninger om mødets dagsorden.
+```{r}
+agenda_df
+```
+
+### Mødets aktører
+Alt hvad der bliver sagt til mødet er gavmildt metadateret. Vi kan fx finde talernes rolle med tagget `<OratorRole>`.
+```{r}
+ft_xml %>% 
+  xml_find_all("//OratorRole") %>% 
+  xml_text() %>% 
+  head()
+```
+
+Igen kan vi udtrække en masse information samtidig og sætte det op som en DataFrame.
+```{r Speakers DataFrame}
+speakers_df <- tibble(
+  firstName = ft_xml %>% 
+    xml_find_all("//Aktivitet") %>% 
+    xml_find_all("//OratorFirstName") %>% 
+    xml_text(),
+  lastName = ft_xml %>% 
+    xml_find_all("//OratorLastName") %>% 
+    xml_text(),
+  party = ft_xml %>% 
+    xml_find_all("//GroupNameShort") %>% 
+    xml_text(),
+  role = ft_xml %>% 
+    xml_find_all("//OratorRole") %>% 
+    xml_text(),
+  start = ft_xml %>% 
+    xml_find_all("//Tale") %>% 
+    xml_find_first(".//StartDateTime") %>% 
+    xml_text(),
+  end = ft_xml %>% 
+    xml_find_all("//Tale") %>% 
+    xml_find_first(".//EndDateTime") %>% 
+    xml_text(),
+  text = ft_xml %>% 
+    xml_find_all("//Tale") %>% 
+    xml_text()
+)
+```
+
+I den nye DataFrame `speakers_df` dækker hver række over en udtalelse i Folketingssalen.
+
+```{r}
+speakers_df %>% 
+  head()
+```
+
+### Datarensning
+I `text`-kolonnen findes de konkrete udtalelser. 
+```{r}
+speakers_df %>% 
+  select(text) %>% 
+  head()
+```
+
+Ved nærmere inspektion kan vi se, at indholdet i `text`-kolonnen indledes af forskellige metadata. Det er en konsekvens af måden, vi har lavet vores udtræk, og vi kan fjerne det med det relativt komplicerede regulære udtryk nedenfor.
+
+Derudover er nogle sætninger bundet sammen uden mellemrum efter punktum. Det er også på grund af måden, vi har lavet vores udtræk, og vi løser det ved at erstatte alle punktummer i teksten med et punktum efterfulgt af et mellemrum.
+```{r Data cleaning}
+speakers_df %>% 
+  mutate(text = str_remove(text, "^.*T\\d\\d:\\d\\d:\\d\\d")) %>% 
+  mutate(text = str_replace_all(text, "\\.", "\\. ")) -> speakers_df
+```
+
+Nu er vores `text`-kolonne blevet lidt pænere. Den er ikke perfekt, men det er godt nok til videre bearbejdning.
+```{r}
+speakers_df %>% 
+  select(text)
+```
+
+
+## Kombinering af dagsorden- og aktørdata
+Vi har nu to DataFrames, der beskriver henholdsvis mødets dagsorden og mødets udtalelser. De to DataFrames er af forskellig størrelse, og der er ikke umiddelbart nogle kolonner, der kan hjælpe os med at kombinere dem.
+
+I stedet laver vi udtrækket på ny for begge slags data på én gang. Ved hjælp af et *for loop* itererer vi hen over hvert punkt på dagsordenen, så informationer om dagsordenen bliver knyttet til hver individuel udtalelse.
+
+Først laver vi en liste (eller vektor) med hvert dagsordenspunkt, som skal være grundlaget for vores loop.
+
+```{r Agenda vector}
+agenda <- as.vector(xml_find_all(ft_xml, "//DagsordenPunkt"))
+```
+
+Dernæst laver vi en ny DataFrame `df`, som skal indeholde det nye udtræk. Vi sætter loopet i gang og lader det køre et antal gange, der svarer til antallet af dagsordenspunkter. For hver iteration identificerer vi informationer om dagsordenen og de enkelte udtalelser og gemmer dem i en midlertidig DataFrame. I slutningen af loopet kombineres den midlertidige DataFrame med `df` og loopet forsætter, ind til det har været i gennem alle punkter på dagsordenen.
+```{r Combined DataFrame}
+df = tibble()
+
+for(i in 1:length(agenda)){
+  temp_df <- tibble(
+    itemNum = agenda[i] %>% 
+      xml_find_all(".//ItemNo") %>% 
+      xml_text(),
+    title = agenda[i] %>% 
+      xml_find_all(".//ShortTitle") %>% 
+      xml_text(),
+    caseNumber = agenda[i] %>% 
+      xml_find_all(".//FTCaseNumber") %>% 
+      xml_text(),
+    caseType = agenda[i] %>% 
+      xml_find_all(".//FTCaseType") %>% 
+      xml_text(),
+    caseStage = agenda[i] %>% 
+      xml_find_all(".//FTCaseStage") %>% 
+      xml_text(),
+    firstName = agenda[i] %>% 
+      xml_find_all(".//OratorFirstName") %>% 
+      xml_text(),
+    lastName = agenda[i] %>% 
+      xml_find_all(".//OratorLastName") %>% 
+      xml_text(),
+    party = agenda[i] %>% 
+      xml_find_all(".//GroupNameShort") %>% 
+      xml_text(),
+    role = agenda[i] %>% 
+      xml_find_all(".//OratorRole") %>% 
+      xml_text(),
+    start = agenda[i] %>% 
+      xml_find_all(".//Tale") %>% 
+      xml_find_first(".//StartDateTime") %>% 
+      xml_text(),
+    end = agenda[i] %>% 
+      xml_find_all(".//Tale") %>% 
+      xml_find_first(".//EndDateTime") %>% 
+      xml_text()
+    )
+  
+  df <- bind_rows(df, temp_df)
+  
+}
+```
+
+Nu har vi én samlet DataFrame med informationer om dagsordenen og de enkelte udtalelser.
+```{r}
+df %>% 
+  head()
+```
+
+Bemærk at vi ikke udtrækker teksten igen, da det ved denne metode kan give problemer med strukturen.
+
+I stedet genbruger vi `text`-kolonnen fra `speakers_df` og matcher den, der hvor de øvrige kolonner er identiske mellem de to DataFrames.
+```{r}
+df %>% 
+  left_join(speakers_df, by=c("firstName", "lastName", "party", "role", "start", "end")) -> df
+```
+
+Vores endelige DataFrame har således informationer om dagsordenen, hvem der taler og hvad der bliver sagt.
+```{r}
+df %>% 
+  head()
+```
+
+## Videre arbejde med data
+
+Vores data har nu et format, hvor vi let kan arbejde videre med det og lave forskellige analyser. Vi kan enten fortsætte arbejdet i R eller et andet analyseprogram.
+
+### Eksport af data
+For at eksportere vores data, så vi kan bruge det i andre programmer, gemmer vi det som en CSV-fil, der nemt kan indlæses i fx Excel.
+```{r}
+df %>% 
+  write_csv("Folketingsdata.csv")
+```
+
+
+### Analyse i R
+I R kan vi lave mange forskellige analyser af vores data. Vi kan fx kigge på, hvor meget tid de forskellige dagsordenspunkter optager, eller hvilke partier, der har mest taletid.
+
+Vi kan nemt arbejde med tidsperioder ved hjælp af `lubridate`-pakken. Ud fra start- og sluttidspunktet beregner vi varigheden er hver enkelt udtalelse.
+```{r message=FALSE}
+library(lubridate)
+
+df %>% 
+  mutate(duration = as_datetime(end) - as_datetime(start)) -> df
+```
+Vores DataFrame har nu en ny kolonne yderst til højre, der angiver varigheden af hver udtalelse i sekunder.
+
+Nu kan vi beregne, hvor meget tid, der er brugt på de enkelte dagsordenspunkter.
+```{r message=FALSE, warning=FALSE}
+df %>% 
+  mutate(title = str_remove(title, ":.*")) %>% 
+  group_by(title) %>% 
+  summarise(seconds = sum(duration)) %>% 
+  arrange(desc(seconds)) %>% 
+  ggplot(aes(title, (seconds))) +
+  geom_col() +
+  coord_flip()
+```
+Vi kan også beregne, hvor meget taletid hvert parti har haft på mødet.
+```{r message=FALSE, warning=FALSE}
+df %>% 
+  group_by(party) %>% 
+  summarise(seconds = sum(duration)) %>% 
+  arrange(desc(seconds)) %>% 
+  ggplot(aes(party, (seconds))) +
+  geom_col() +
+  coord_flip()
+```
+
+For at få et mere retvisende billede, fjerner vi udtalelser fra formanden, da vedkommende vil have uforbeholdent meget taletid i forhold til de øvrige deltagere uden egentligt indhold.
+
+Vi fjerner også meta-værdien *MødeSlut*. Begge dele filtreres væk med `filter`-funktionen.
+
+```{r message=FALSE, warning=FALSE}
+df %>% 
+  filter(role != "formand", party != "MødeSlut") %>% 
+  group_by(party) %>% 
+  summarise(seconds = sum(duration)) %>% 
+  arrange(desc(seconds)) %>% 
+  ggplot(aes(party, (seconds))) +
+  geom_col() +
+  coord_flip()
+```
+
+<hr>
+
+## <a id="alt_agenda"/>Alternativt udtræk af dagsorden
+Metoden, der er brugt til at udtrække informationer om dagsordenen, er relativt simpel - til gengæld er den også følsom overfor uregelmæssigheder i strukturen, fx manglende data.
+
+Hvis man får fejl, når man forsøger at udtrække dagsordensdata, kan man i stedet bruge metoden nedenfor,
+der er mere robust over for manglende data.
+
+```{r}
+agenda <- as.vector(xml_find_all(ft_xml, "//DagsordenPunkt"))
+
+agenda_df <- tibble()
+
+for(i in 1:length(agenda)){
+  temp_df <- tibble(
+    itemNum = agenda[i] %>% 
+      xml_find_all(".//ItemNo") %>% 
+      xml_text(),
+    title = agenda[i] %>% 
+      xml_find_all(".//ShortTitle") %>% 
+      xml_text(),
+    caseNumber = agenda[i] %>% 
+      xml_find_all(".//FTCaseNumber") %>% 
+      xml_text(),
+    caseType = agenda[i] %>% 
+      xml_find_all(".//FTCaseType") %>% 
+      xml_text(),
+    caseStage = agenda[i] %>% 
+      xml_find_all(".//FTCaseStage") %>% 
+      xml_text(),
+    start = agenda[i] %>%
+      xml_find_first(".//StartDateTime") %>%
+      xml_text()
+    )
+  
+  agenda_df <- bind_rows(agenda_df, temp_df)
+}  
+
+```
+
+```{r}
+agenda_df
+```
